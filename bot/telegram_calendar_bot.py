@@ -172,9 +172,9 @@ def parse_event_datetime(text: str, user_timezone: str):
     else:
         start_datetime = start_datetime.astimezone(user_tz)
 
-    # --- если дата в прошлом → переносим на следующий год ---
-    if start_datetime < now:
-        start_datetime = start_datetime.replace(year=start_datetime.year + 1)
+    # # --- если дата в прошлом → переносим на следующий год ---
+    # if start_datetime > now:
+    #     start_datetime = start_datetime.replace(year=start_datetime.year + 1)
 
     # --- диапазон времени ---
     #end_datetime = None
@@ -228,6 +228,13 @@ class TelegramCalendarBot:
     async def handle_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['waiting_for'] = 'reminder'
         await update.message.reply_text("За сколько минут до события присылать напоминание?")
+
+    @staticmethod
+    async def handle_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /schedule - запрос даты для просмотра мероприятий"""
+        context.user_data['waiting_for'] = 'schedule_date'
+        await update.message.reply_text(
+            "Введите дату для просмотра мероприятий (например, сегодня, завтра или 30.08.2025):")
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -343,10 +350,6 @@ class TelegramCalendarBot:
             await update.message.reply_text("За сколько минут до события присылать напоминание?")
             return
 
-        # if 'waiting_for' in context.user_data:
-        #     await self.handle_user_input(update, context, text)
-        #     return
-
         try:
             title, start_dt, end_dt = parse_event_datetime(text, user_data['timezone'])
         except ValueError as e:
@@ -374,6 +377,44 @@ class TelegramCalendarBot:
     async def handle_user_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
         user_id = str(update.effective_user.id)
         waiting_for = context.user_data.get('waiting_for')
+        user_data = self.user_manager.get_user(user_id) or {}
+
+        # --- обработка ввода даты для /schedule ---
+        if waiting_for == 'schedule_date':
+            try:
+                # используем ту же функцию parse_event_datetime, чтобы распознать дату
+                _, start_dt, _ = parse_event_datetime(text, user_data.get('timezone', 'Europe/Moscow'))
+                # приводим к формату даты без времени
+                day_start = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                day_end = day_start + timedelta(days=1)
+
+                # получаем события из календаря
+                events = self.calendar_manager.get_events(
+                    user_calendar_id=user_data.get('calendar_id'),
+                    time_min=day_start,
+                    time_max=day_end
+                )
+
+                if events:
+                    msg = "📅 События на этот день:\n"
+                    for e in events:
+                        start_time = e['start'].strftime("%H:%M")
+                        end_time = e['end'].strftime("%H:%M") if e.get('end') else ""
+                        msg += f"- {e['title']} ⏰ {start_time}"
+                        if end_time:
+                            msg += f" — {end_time}"
+                        msg += "\n"
+                else:
+                    msg = "На этот день событий нет."
+
+                await update.message.reply_text(msg)
+                context.user_data.pop('waiting_for')
+
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Некорректная дата, попробуйте снова (например: сегодня, завтра или 30.08.2025)")
+
+            return
 
         if waiting_for == 'email':
             if '@' in text and '.' in text:
@@ -399,13 +440,20 @@ class TelegramCalendarBot:
             if tz:
                 user_data = self.user_manager.get_user(user_id)
                 user_data['timezone'] = tz
-                # Создаём персональный календарь сразу после ввода timezone
-                calendar_id = self.calendar_manager.create_user_calendar(
-                    user_email=user_data['email'],
-                    user_timezone=tz,
-                    calendar_summary=f"{update.effective_user.first_name} Календарь"
-                )
-                user_data['calendar_id'] = calendar_id
+
+                if not user_data.get('calendar_id'):
+                    # Пытаемся получить существующий календарь
+                    existing_calendar_id = self.calendar_manager.get_user_calendar(user_data['email'])
+                    if existing_calendar_id:
+                        calendar_id = existing_calendar_id
+                    else:
+                        # Если нет — создаем новый
+                        calendar_id = self.calendar_manager.create_user_calendar(
+                            user_email=user_data['email'],
+                            user_timezone=tz,
+                            calendar_summary=f"{update.effective_user.first_name} Календарь"
+                        )
+                    user_data['calendar_id'] = calendar_id
                 self.user_manager.save_user(user_id, user_data)
 
                 await update.message.reply_text(
@@ -462,6 +510,7 @@ class TelegramCalendarBot:
         app.add_handler(CommandHandler('email', self.handle_email_command))
         app.add_handler(CommandHandler('timezone', self.handle_timezone_command))
         app.add_handler(CommandHandler('alert', self.handle_alert_command))
+        app.add_handler(CommandHandler("schedule", self.handle_schedule_command))
         app.add_handler(CallbackQueryHandler(self.button_callback))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         logger.info("Бот запущен!")

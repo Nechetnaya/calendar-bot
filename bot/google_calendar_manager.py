@@ -71,7 +71,6 @@ class GoogleCalendarManager:
             calendar_id=None
     ) -> str:
         """Создание события в календаре пользователя"""
-        calendar_id = calendar_id or self.calendar_id
         try:
             if end_datetime is None:
                 end_datetime = start_datetime + timedelta(hours=1)
@@ -118,4 +117,51 @@ class GoogleCalendarManager:
             return events_result.get('items', [])
         except Exception as e:
             logger.error(f"Ошибка при получении событий: {e}")
+            return []
+
+    def get_events(self, user_calendar_id: str, time_min: datetime, time_max: datetime):
+        """
+        Возвращает список событий из календаря за указанный период
+        :param user_calendar_id: id календаря пользователя
+        :param time_min: datetime начала диапазона
+        :param time_max: datetime конца диапазона
+        :return: список словарей с ключами 'title', 'start', 'end'
+        """
+        if not user_calendar_id:
+            return []
+
+        # Приведение к формату ISO
+        time_min_iso = time_min.isoformat()
+        time_max_iso = time_max.isoformat()
+
+        try:
+            events_result = self.service.events().list(
+                calendarId=user_calendar_id,
+                timeMin=time_min_iso,
+                timeMax=time_max_iso,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+
+            events = []
+            for e in events_result.get('items', []):
+                start = e['start'].get('dateTime') or e['start'].get('date')
+                end = e['end'].get('dateTime') or e['end'].get('date')
+
+                # Конвертация строк в datetime с учетом часового пояса
+                from dateutil.parser import parse
+                start_dt = parse(start)
+                end_dt = parse(end) if end else None
+
+                events.append({
+                    'title': e.get('summary', 'Без названия'),
+                    'start': start_dt,
+                    'end': end_dt
+                })
+
+            return events
+
+        except Exception as ex:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка при получении событий: {ex}")
             return []
