@@ -48,84 +48,143 @@ def parse_timezone(input_str: str):
     return None
 
 
+def parse_date_range(text_lower, now, user_tz):
+    months = {
+        'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5,
+        'июня': 6, 'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10,
+        'ноября': 11, 'декабря': 12
+    }
+    weekdays = {
+        'понедельника': 0, 'вторника': 1, 'среды': 2, 'четверга': 3,
+        'пятницы': 4, 'субботы': 5, 'воскресенья': 6
+    }
+
+    start_datetime = None
+    end_datetime = None
+
+    # --- диапазон дат: числа/текст/год ---
+    date_range_match = re.search(
+        r'с\s+(\d{1,2})(?:[.](\d{1,2}))?\s*(\w+)?(?:\s*(\d{4}))?\s*(?:по|-)\s+(\d{1,2})(?:[.](\d{1,2}))?\s*(\w+)?(?:\s*(\d{4}))?',
+        text_lower
+    )
+
+    if date_range_match:
+        start_day = int(date_range_match.group(1))
+        start_month_num = date_range_match.group(2)
+        start_month_text = date_range_match.group(3)
+        start_year_num = date_range_match.group(4)
+        end_day = int(date_range_match.group(5))
+        end_month_num = date_range_match.group(6)
+        end_month_text = date_range_match.group(7)
+        end_year_num = date_range_match.group(8)
+
+        start_month = int(start_month_num) if start_month_num else months.get(start_month_text, now.month)
+        end_month = int(end_month_num) if end_month_num else months.get(end_month_text, start_month)
+
+        start_year = int(start_year_num) if start_year_num else now.year
+        end_year = int(end_year_num) if end_year_num else start_year
+
+        start_datetime = user_tz.localize(datetime(start_year, start_month, start_day, 9, 0))
+        end_datetime = user_tz.localize(datetime(end_year, end_month, end_day, 18, 0))
+        text_lower = text_lower.replace(date_range_match.group(0), '')
+
+    # --- дни недели ---
+    if not start_datetime:
+        m = re.search(r'с\s+(\w+)\s*(?:до|по)\s*(\w+)', text_lower)
+        if m and m.group(1) in weekdays and m.group(2) in weekdays:
+            start_weekday = weekdays[m.group(1)]
+            end_weekday = weekdays[m.group(2)]
+            days_ahead = (start_weekday - now.weekday() + 7) % 7
+            start_datetime = (now + timedelta(days=days_ahead)).replace(hour=9, minute=0, second=0, microsecond=0)
+            days_diff = (end_weekday - start_weekday + 7) % 7
+            end_datetime = (start_datetime + timedelta(days=days_diff)).replace(hour=18, minute=0)
+            text_lower = text_lower.replace(m.group(0), '')
+
+    return text_lower, start_datetime, end_datetime
+
+
 def parse_event_datetime(text: str, user_timezone: str):
     user_tz = pytz.timezone(user_timezone)
     text_lower = text.lower()
     now = datetime.now(pytz.utc).astimezone(user_tz)
 
-    #start_datetime = None
     start_time_range = None
     end_time_range = None
 
-    # --- поиск диапазона времени "с 10 до 15" ---
-    time_range = re.search(
-        r'(?:с|от)\s*(\d{1,2}(?:[:.\s]\d{2})?)\s*(?:до|-)\s*(\d{1,2}(?:[:.\s]\d{2})?)',
-        text_lower
-    )
-    if time_range:
-        start_time_range = time_range.group(1)
-        end_time_range = time_range.group(2)
-        text_lower = text_lower.replace(time_range.group(0), '')
+    text_lower, start_datetime, end_datetime = parse_date_range(text_lower, now, user_tz)
+    # --- если диапазон дат не найден, ищем одиночную дату ---
+    if not start_datetime:
+        # старая логика с today/tomorrow/послезавтра, DD.MM, search_dates
 
-    # --- ключевые слова "сегодня", "завтра", "послезавтра" ---
-    # "через N час/минут"
-    match = re.search(r'через\s+((\d+)\s*(часa|часов|час|минуты|минут)|полчаса)', text_lower)
-    if match:
-        fragment = match.group(0)
-        if 'полчаса' in fragment:
-            delta = timedelta(minutes=30)
-        elif 'час' in fragment and not re.search(r'\d+', fragment):
-            delta = timedelta(hours=1)
-        else:
-            amount = int(match.group(2))
-            unit = match.group(3)
-            if unit and 'мин' in unit:
-                delta = timedelta(minutes=amount)
+        # --- поиск диапазона времени "с 10 до 15" ---
+        time_range = re.search(
+            r'(?:с|от)\s*(\d{1,2}(?:[:.\s]\d{2})?)\s*(?:до|-)\s*(\d{1,2}(?:[:.\s]\d{2})?)',
+            text_lower
+        )
+        if time_range:
+            start_time_range = time_range.group(1)
+            end_time_range = time_range.group(2)
+            text_lower = text_lower.replace(time_range.group(0), '')
+
+        # --- ключевые слова "сегодня", "завтра", "послезавтра" ---
+        # "через N час/минут"
+        match = re.search(r'через\s+((\d+)\s*(часa|часов|час|минуты|минут)|полчаса)', text_lower)
+        if match:
+            fragment = match.group(0)
+            if 'полчаса' in fragment:
+                delta = timedelta(minutes=30)
+            elif 'час' in fragment and not re.search(r'\d+', fragment):
+                delta = timedelta(hours=1)
             else:
-                delta = timedelta(hours=amount)
+                amount = int(match.group(2))
+                unit = match.group(3)
+                if unit and 'мин' in unit:
+                    delta = timedelta(minutes=amount)
+                else:
+                    delta = timedelta(hours=amount)
 
-        start_datetime = now + delta
-        end_datetime = start_datetime + timedelta(hours=1)
+            start_datetime = now + delta
+            end_datetime = start_datetime + timedelta(hours=1)
 
-        # Убираем весь фрагмент, включая пробелы вокруг
-        event_title = re.sub(r'\s*' + re.escape(fragment) + r'\s*', ' ', text_lower, flags=re.IGNORECASE).strip()
-        if not event_title:
-            event_title = "Напоминание"
+            # Убираем весь фрагмент, включая пробелы вокруг
+            event_title = re.sub(r'\s*' + re.escape(fragment) + r'\s*', ' ', text_lower, flags=re.IGNORECASE).strip()
+            if not event_title:
+                event_title = "Напоминание"
 
-        return event_title, start_datetime, end_datetime
+            return event_title, start_datetime, end_datetime
 
-    elif "сегодня" in text_lower:
-        start_datetime = now.replace(second=0, microsecond=0)
-    elif "завтра" in text_lower:
-        start_datetime = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
-        text_lower = text_lower.replace("завтра", "")
-    elif "послезавтра" in text_lower:
-        start_datetime = (now + timedelta(days=2)).replace(hour=9, minute=0, second=0, microsecond=0)
-        text_lower = text_lower.replace("послезавтра", "")
-    else:
-        # --- сначала пробуем регулярку DD.MM ---
-        date_match = re.search(r'\b(\d{1,2})[.](\d{1,2})\b', text_lower)
-        if date_match:
-            day = int(date_match.group(1))
-            month = int(date_match.group(2))
-            year = now.year
-            start_datetime = user_tz.localize(datetime(year, month, day))
-            text_lower = text_lower.replace(date_match.group(0), '')
+        elif "сегодня" in text_lower:
+            start_datetime = now.replace(second=0, microsecond=0)
+        elif "завтра" in text_lower:
+            start_datetime = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+            text_lower = text_lower.replace("завтра", "")
+        elif "послезавтра" in text_lower:
+            start_datetime = (now + timedelta(days=2)).replace(hour=9, minute=0, second=0, microsecond=0)
+            text_lower = text_lower.replace("послезавтра", "")
         else:
-            # --- обычный парсинг через search_dates ---
-            dates = search_dates(
-                text_lower,
-                languages=['ru'],
-                settings={'PREFER_DATES_FROM': 'future', 'DATE_ORDER': 'DMY'}
-            )
-            if dates:
-                start_datetime = dates[0][1]
-                # если год не указан, берем текущий
-                if start_datetime.year == 1900:
-                    start_datetime = start_datetime.replace(year=now.year)
-                text_lower = text_lower.replace(dates[0][0], '')
+            # --- сначала пробуем регулярку DD.MM ---
+            date_match = re.search(r'\b(\d{1,2})[.](\d{1,2})\b', text_lower)
+            if date_match:
+                day = int(date_match.group(1))
+                month = int(date_match.group(2))
+                year = now.year
+                start_datetime = user_tz.localize(datetime(year, month, day))
+                text_lower = text_lower.replace(date_match.group(0), '')
             else:
-                start_datetime = None
+                # --- обычный парсинг через search_dates ---
+                dates = search_dates(
+                    text_lower,
+                    languages=['ru'],
+                    settings={'PREFER_DATES_FROM': 'future', 'DATE_ORDER': 'DMY'}
+                )
+                if dates:
+                    start_datetime = dates[0][1]
+                    # если год не указан, берем текущий
+                    if start_datetime.year == 1900:
+                        start_datetime = start_datetime.replace(year=now.year)
+                    text_lower = text_lower.replace(dates[0][0], '')
+                else:
+                    start_datetime = None
 
 
     parsed_time = parse_time_from_text(text_lower)
@@ -172,12 +231,7 @@ def parse_event_datetime(text: str, user_timezone: str):
     else:
         start_datetime = start_datetime.astimezone(user_tz)
 
-    # # --- если дата в прошлом → переносим на следующий год ---
-    # if start_datetime > now:
-    #     start_datetime = start_datetime.replace(year=start_datetime.year + 1)
-
     # --- диапазон времени ---
-    #end_datetime = None
     if start_time_range and end_time_range:
         def fmt(s):
             parts = [int(x) for x in re.split(r'[:.\s]', s) if x.strip()]
@@ -193,10 +247,11 @@ def parse_event_datetime(text: str, user_timezone: str):
         if end_datetime.tzinfo is None:
             end_datetime = user_tz.localize(end_datetime)
     else:
-        # если конец не указан → +1 час
-        end_datetime = start_datetime + timedelta(hours=1)
-        if end_datetime.tzinfo is None:
-            end_datetime = user_tz.localize(end_datetime)
+        # добавляем +1 час только если end_datetime ещё не задан
+        if not end_datetime:
+            end_datetime = start_datetime + timedelta(hours=1)
+            if end_datetime.tzinfo is None:
+                end_datetime = user_tz.localize(end_datetime)
 
     # --- заголовок события: остаток текста ---
     event_title = text_lower.strip() or "Напоминание"
@@ -361,13 +416,16 @@ class TelegramCalendarBot:
             'start': start_dt,
             'end': end_dt
         }
+        pending = context.user_data.get('pending_event')
 
-        if end_dt:
-            time_str = f"{start_dt.strftime('%H:%M')} — {end_dt.strftime('%H:%M')}"
+        if pending['end'].date() != pending['start'].date():
+            date_str = f"{pending['start'].strftime('%d.%m.%Y')} — {pending['end'].strftime('%d.%m.%Y')}"
+            time_str = "Весь день"
         else:
-            time_str = start_dt.strftime('%H:%M')
+            date_str = pending['start'].strftime('%d.%m.%Y')
+            time_str = f"{pending['start'].strftime('%H:%M')} — {pending['end'].strftime('%H:%M')}"
 
-        confirm_text = f"Вы хотите создать событие?\n\n📅 {title}\n🗓 {start_dt.strftime('%d.%m.%Y')}\n⏰ {time_str}"
+        confirm_text = f"Вы хотите создать событие?\n\n📅 {title}\n🗓 {date_str}\n⏰ {time_str}"
         keyboard = [
             [InlineKeyboardButton("✅ Да", callback_data='confirm_event')],
             [InlineKeyboardButton("❌ Нет", callback_data='cancel_event')]
