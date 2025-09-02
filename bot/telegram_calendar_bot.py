@@ -1,18 +1,20 @@
 import os
 import logging
 import asyncio
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from bot.google_calendar_manager import GoogleCalendarManager
-from bot.user_manager import UserManager
 import pytz
+import re
+import json
+from datetime import datetime, timedelta
 from timezonefinder import TimezoneFinder
 from geopy.geocoders import Nominatim
-import re
 from dateparser.search import search_dates
-from telegram.ext import CommandHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, CallbackQueryHandler, CommandHandler
+
+from bot.user_manager import UserManager
 from bot.time_parser import parse_time_from_text
+from bot.llm_parser import parse_user_message
+from bot.google_calendar_manager import GoogleCalendarManager
 
 
 # ---------------- ЛОГИ ----------------
@@ -259,6 +261,15 @@ def parse_event_datetime(text: str, user_timezone: str):
     return event_title, start_datetime, end_datetime
 
 
+def _iso_to_dt(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
 # ---------------- КЛАСС БОТА ----------------
 class TelegramCalendarBot:
     def __init__(self):
@@ -346,12 +357,14 @@ class TelegramCalendarBot:
 
             print(f"Пользователь {user_id} создал событие: {pending}")
 
-            event_link = await self.calendar_manager.create_event(
-                pending['title'],
-                pending['start'],
-                pending['end'],
-                user_data['timezone'],
-                calendar_id = user_data['calendar_id']  # ← важно
+            event_link = self.calendar_manager.create_event(
+                title=pending['title'],
+                start=pending['start'],
+                end=pending['end'],
+                timezone=user_data['timezone'],
+                user_calendar_id=user_data['calendar_id'],
+                location=pending.get('location'),
+                description=pending.get('description')
             )
 
             if event_link:
@@ -361,11 +374,20 @@ class TelegramCalendarBot:
                     event_title=pending['title'],
                     event_datetime=pending['start'],
                     reminder_datetime=reminder_datetime,
-                    context=context
+                    context=context,
+                    location=pending.get('location'),
+                    description=pending.get('description')
                 )
-                await query.edit_message_text(f"✅ Событие создано!\n📅 {pending['title']}\n🕐 {pending['start'].strftime('%d.%m.%Y %H:%M')}")
+                await query.edit_message_text(
+                    f"✅ Событие создано!\n"
+                    f"📅 {pending['title']}\n"
+                    f"🕐 {pending['start'].strftime('%d.%m.%Y %H:%M')}"
+                    + (f"\n📍 {pending['location']}" if pending.get('location') else "")
+                    + (f"\n📝 {pending['description']}" if pending.get('description') else "")
+                )
             else:
                 await query.edit_message_text("❌ Ошибка при создании события")
+
             context.user_data.pop('pending_event', None)
 
         elif query.data == 'cancel_event':
@@ -373,6 +395,7 @@ class TelegramCalendarBot:
             context.user_data.pop('pending_event', None)
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info(f"Получено сообщение от {update.effective_user.id}: {update.message.text}")
         user_id = str(update.effective_user.id)
         text = update.message.text
 
@@ -405,32 +428,153 @@ class TelegramCalendarBot:
             await update.message.reply_text("За сколько минут до события присылать напоминание?")
             return
 
+        # === НОВОЕ: сначала пробуем rule-based парсер ===
+        # try:
+        #     title, start_dt, end_dt = parse_event_datetime(text, user_data['timezone'])
+        #     # parser_success = True
+        #     parser_success = False
+        # except ValueError:
+        #     parser_success = False
+        #
+        #     # === Если парсер не справился, вызываем LLM ===
+        # if not parser_success:
+
+        # Если ждём уточняющий ответ от пользователя (awaiting_clarify) — обработать его первым
+        if context.user_data.get('awaiting_clarify'):
+            clarify = context.user_data.pop('awaiting_clarify')
+            combined_text = (
+                f"{clarify.get('orig_text', '')}\n\n"
+                f"Предыдущее частичное распознавание: {json.dumps(clarify.get('llm_json', {}), ensure_ascii=False)}\n\n"
+                f"Уточнение ({clarify.get('field')}): {text}"
+            )
+            input_text_for_llm = combined_text
+        else:
+            input_text_for_llm = text
+
         try:
-            title, start_dt, end_dt = parse_event_datetime(text, user_data['timezone'])
-        except ValueError as e:
-            await update.message.reply_text(f"❌ {str(e)}")
+            llm_result = await parse_user_message(input_text_for_llm, user_data['timezone'])
+        except Exception as e:
+            logger.exception("Ошибка при вызове LLM")
+            await update.message.reply_text("Ошибка при распознавании запроса (LLM).")
             return
 
-        context.user_data['pending_event'] = {
-            'title': title,
-            'start': start_dt,
-            'end': end_dt
-        }
-        pending = context.user_data.get('pending_event')
+        logger.info("LLM intent=%s", llm_result.get('intent'))
 
-        if pending['end'].date() != pending['start'].date():
-            date_str = f"{pending['start'].strftime('%d.%m.%Y')} — {pending['end'].strftime('%d.%m.%Y')}"
-            time_str = "Весь день"
-        else:
-            date_str = pending['start'].strftime('%d.%m.%Y')
-            time_str = f"{pending['start'].strftime('%H:%M')} — {pending['end'].strftime('%H:%M')}"
+        intent = llm_result.get("intent")
 
-        confirm_text = f"Вы хотите создать событие?\n\n📅 {title}\n🗓 {date_str}\n⏰ {time_str}"
-        keyboard = [
-            [InlineKeyboardButton("✅ Да", callback_data='confirm_event')],
-            [InlineKeyboardButton("❌ Нет", callback_data='cancel_event')]
-        ]
-        await update.message.reply_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        if intent == "query_schedule":
+            # получение расписания
+            time_min = _iso_to_dt(llm_result['time_min'])
+            time_max = _iso_to_dt(llm_result['time_max'])
+
+            if not time_min or not time_max:
+                await update.message.reply_text("Пожалуйста, уточните дату для просмотра расписания:")
+                context.user_data['awaiting_clarify'] = {
+                    "field": "date",
+                    "llm_json": llm_result,
+                    "orig_text": text
+                }
+                return
+
+            events = self.calendar_manager.get_events(
+                user_calendar_id=user_data.get('calendar_id'),
+                time_min=time_min,
+                time_max=time_max
+            )
+            # Можно отдать юзеру красивый текстовый список
+            schedule_text = "\n".join([
+                f"📌 {e['title']} — {e['start'].strftime('%d.%m %H:%M')} - {e['end'].strftime('%H:%M')}"
+                for e in events
+            ]) or "Нет событий в выбранный период"
+            await update.message.reply_text(schedule_text)
+
+        elif intent == "find_free_time":
+            time_min = _iso_to_dt(llm_result['time_min'])
+            time_max = _iso_to_dt(llm_result['time_max'])
+
+            if not time_min or not time_max:
+                await update.message.reply_text("Пожалуйста, уточните дату для просмотра расписания:")
+                context.user_data['awaiting_clarify'] = {
+                    "field": "date",
+                    "llm_json": llm_result,
+                    "orig_text": text
+                }
+                return
+
+            # Получаем слоты по 1 часу с пометкой free
+            slots = self.calendar_manager.get_free_slots(
+                user_calendar_id=user_data.get('calendar_id'),
+                time_min=time_min,
+                time_max=time_max
+            )
+            # Формируем текст с отметкой свободен/занят
+            if slots:
+                slots_text = "\n".join([
+                    f"🕒 {s['start'].strftime('%d.%m %H:%M')} - {s['end'].strftime('%H:%M')} — {'Свободно' if s['free'] else 'Занято'}"
+                    for s in slots
+                ])
+            else:
+                slots_text = "Нет слотов в указанном периоде"
+            await update.message.reply_text(slots_text)
+
+        elif intent == "create_event":
+            start_dt = _iso_to_dt(llm_result.get('start'))
+            end_dt = _iso_to_dt(llm_result.get('end'))
+            title = llm_result['title']
+            location = llm_result.get('location')
+            description = llm_result.get('description')
+
+            if title is None:
+                # спросить название
+                await update.message.reply_text("Пожалуйста, уточните название события:")
+                context.user_data['awaiting_clarify'] = {
+                    "field": "title",
+                    "llm_json": llm_result,
+                    "orig_text": text
+                }
+                return
+
+            if (start_dt is None and end_dt is None):
+                await update.message.reply_text("Пожалуйста, уточните дату и/или время события:")
+                context.user_data['awaiting_clarify'] = {
+                    "field": "datetime",
+                    "llm_json": llm_result,
+                    "orig_text": text
+                }
+                return
+
+            context.user_data['pending_event'] = {
+                'title': title,
+                'start': start_dt,
+                'end': end_dt,
+                'location': location,
+                'description': description,
+            }
+            pending = context.user_data['pending_event']
+
+            if pending['end'].date() != pending['start'].date():
+                date_str = f"{pending['start'].strftime('%d.%m.%Y')} — {pending['end'].strftime('%d.%m.%Y')}"
+                time_str = "Весь день"
+            else:
+                date_str = pending['start'].strftime('%d.%m.%Y')
+                time_str = f"{pending['start'].strftime('%H:%M')} — {pending['end'].strftime('%H:%M')}"
+
+            location_str = pending.get('location') or "Не указано"
+            description_str = pending.get('description') or ""
+
+            confirm_text = (
+                f"Вы хотите создать событие?\n\n"
+                f"📅 {title}\n"
+                f"🗓 {date_str}\n"
+                f"⏰ {time_str}\n"
+                f"📍 {location_str}\n"
+                f"   {description_str}"
+            )
+            keyboard = [
+                [InlineKeyboardButton("✅ Да", callback_data='confirm_event')],
+                [InlineKeyboardButton("❌ Нет", callback_data='cancel_event')]
+            ]
+            await update.message.reply_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def handle_user_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
         user_id = str(update.effective_user.id)
@@ -552,14 +696,27 @@ class TelegramCalendarBot:
                 await update.message.reply_text("❌ Укажите число (количество минут):")
 
     @staticmethod
-    async def schedule_reminder(chat_id: int, event_title: str, event_datetime: datetime, reminder_datetime: datetime, context):
+    async def schedule_reminder(chat_id: int, event_title: str, event_datetime: datetime, reminder_datetime: datetime,
+                                context, location: str = None, description: str = None):
         now = datetime.now(reminder_datetime.tzinfo)
         if reminder_datetime <= now:
             return
         delay = (reminder_datetime - now).total_seconds()
+
         async def send_reminder():
             await asyncio.sleep(delay)
-            await context.bot.send_message(chat_id=chat_id, text=f"⏰ Напоминание!\n📅 {event_title}\n🕐 {event_datetime.strftime('%d.%m.%Y %H:%M')}")
+            message = (
+                f"⏰ Напоминание!\n"
+                f"📅 {event_title}\n"
+                f"🕐 {event_datetime.strftime('%d.%m.%Y %H:%M')}"
+            )
+            if location:
+                message += f"\n📍 {location}"
+            if description:
+                message += f"\n📝 {description}"
+
+            await context.bot.send_message(chat_id=chat_id, text=message)
+
         asyncio.create_task(send_reminder())
 
     def run(self):

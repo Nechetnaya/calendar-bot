@@ -62,24 +62,34 @@ class GoogleCalendarManager:
             logger.error(f"Ошибка при создании календаря: {e}")
             return None
 
-    async def create_event(
+    def create_event(
             self,
-            title,
-            start_datetime,
-            end_datetime: Optional[datetime] = None,
-            timezone='Europe/Moscow',
-            calendar_id=None
+            user_calendar_id: str,
+            start: datetime,
+            end: datetime = None,
+            title: str = None,
+            location: str = None,
+            description: str = None,
+            timezone: str = "Europe/Moscow"
     ) -> str:
         """Создание события в календаре пользователя"""
         try:
-            if end_datetime is None:
-                end_datetime = start_datetime + timedelta(hours=1)
+            # если конец не указан — +1 час
+            if end is None:
+                end = start + timedelta(hours=1)
 
             event = {
-                'summary': title,
-                'description': 'Создано через Telegram бота',
-                'start': {'dateTime': start_datetime.isoformat(), 'timeZone': timezone},
-                'end': {'dateTime': end_datetime.isoformat(), 'timeZone': timezone},
+                'summary': title if title else "Без названия",
+                'location': location if location else None,
+                'description': description if description else None,
+                'start': {
+                    'dateTime': start.isoformat(),
+                    'timeZone': timezone
+                },
+                'end': {
+                    'dateTime': end.isoformat(),
+                    'timeZone': timezone
+                },
                 'reminders': {
                     'useDefault': False,
                     'overrides': [
@@ -90,34 +100,18 @@ class GoogleCalendarManager:
             }
 
             created_event = self.service.events().insert(
-                calendarId=calendar_id,
+                calendarId=user_calendar_id,
                 body=event
             ).execute()
 
             event_link = created_event.get('htmlLink')
-            logger.info(f"Событие '{title}' создано в календаре {calendar_id}")
+            logger.info(f"Событие '{title}' создано в календаре {user_calendar_id}")
             return event_link
 
         except Exception as e:
             logger.error(f"Ошибка при создании события: {e}")
             return None
 
-    def list_upcoming_events(self, calendar_id: str, max_results: int = 10) -> list:
-        """Получение предстоящих событий для конкретного календаря"""
-        try:
-            now = datetime.utcnow().isoformat() + 'Z'
-            events_result = self.service.events().list(
-                calendarId=calendar_id,
-                timeMin=now,
-                maxResults=max_results,
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
-
-            return events_result.get('items', [])
-        except Exception as e:
-            logger.error(f"Ошибка при получении событий: {e}")
-            return []
 
     def get_events(self, user_calendar_id: str, time_min: datetime, time_max: datetime):
         """
@@ -162,6 +156,40 @@ class GoogleCalendarManager:
             return events
 
         except Exception as ex:
-            import logging
             logging.getLogger(__name__).error(f"Ошибка при получении событий: {ex}")
             return []
+
+    def get_free_slots(
+            self, user_calendar_id: str, time_min: datetime, time_max: datetime
+    ):
+        """
+        Возвращает список слотов по 1 часу с отметкой свободен/занят.
+        :return: [{'start': datetime, 'end': datetime, 'free': True/False}]
+        """
+        events = self.get_events(user_calendar_id, time_min, time_max)
+        events = sorted(events, key=lambda e: e['start'])
+        slots = []
+
+        current = time_min.replace(minute=0, second=0, microsecond=0)
+
+        while current < time_max:
+            slot_end = current + timedelta(hours=1)
+            # проверяем, пересекается ли слот с каким-либо событием
+            is_free = True
+            for event in events:
+                event_start = event['start']
+                event_end = event['end'] or (event_start + timedelta(hours=1))
+                if event_end > current and event_start < slot_end:
+                    is_free = False
+                    break
+
+            slots.append({
+                'start': current,
+                'end': slot_end,
+                'free': is_free
+            })
+
+            current = slot_end
+
+        return slots
+
