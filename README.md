@@ -1,65 +1,68 @@
 # Telegram Calendar Bot G-Buddy
 
-**Цель:** Telegram-бот для распознавания событий в текстовых сообщениях, их создания в Google Calendar и ответов на вопросы о расписании. В перспективе — OCR для скриншотов.
+**Overview:**  
+Telegram bot designed to intelligently recognize events from natural language messages, create them in Google Calendar, and provide answers to scheduling queries. 
+
+In future updates, it will support OCR for extracting events from screenshots.
 
 ---
 
-## Возможности
+## Key Features
 
-- Распознавание событий из текста: дата, время, длительность, заголовок, место  
-- Создание и синхронизация событий в Google Calendar  
-- Подтверждение пользователя перед добавлением события  
-- Запросы о расписании и свободном времени  
-- Мини-приложение календаря на FastAPI (месяц / неделя / день)  
+- **Smart Event Recognition:** Extracts date, time, duration, title, and location from user messages.  
+- **Google Calendar Integration:** Creates and synchronizes events seamlessly.  
+- **User Confirmation:** Ensures events are only added after user approval.  
+- **Schedule Queries:** Users can ask about planned events or available free time.  
+- **Mini Calendar Web App:** FastAPI-based interface displaying Month / Week / Day views.  
 
 ---
 
-## Технологии
+## Technologies
 
-- Python 3.11  
+- **Python 3.11**  
 - [python-telegram-bot](https://pypi.org/project/python-telegram-bot/)  
-- Google Calendar API  
-- dateparser + regex  
-- pytz  
-- FastAPI + Uvicorn  
-- OpenAI API (ChatGPT-5 Nano)  
+- **Google Calendar API**  
+- **dateparser + regex** for text parsing  
+- **pytz** for timezone management  
+- **FastAPI + Uvicorn** for the mini calendar web app  
+- **OpenAI API (ChatGPT-5 Nano)** for NLP event extraction  
 
 ---
 
-## Запуск приложения
+## Running the Application
 
-### FastAPI приложение
+### FastAPI App
 uvicorn server.main:app --host 0.0.0.0 --port 8000
 
-### Telegram-бот
+### Telegram Bot
 python run.py
 
-## Пример взаимодействия с ботом
+## Example Bot Interaction
 
-**Пользователь:**  
-завтра встреча с Петей в 14:30 в МСК
+**User:**  
+Tomorrow meeting with Ann at 14:30 MSK
 
-**Бот:**  
-Вы хотите создать событие?  
-📅 Встреча с Петей  
+**Bot:**  
+Do you want to create an event?  
+📅 Meeting with Ann  
 🗓 22.08.2025  
 ⏰ 14:30 — 15:30  
-📍 МСК  
-[✅ Да] [❌ Нет]
+📍 MSK  
+[✅ Yes] [❌ No]
 
-**Пользователь:**  
-✅ Да
+**User:**  
+✅ Yes
 
-**Бот:**  
-✅ Событие создано!  
-📅 Встреча с Петей  
+**Bot:**  
+✅ Event created!  
+📅 Meeting with Ann  
 🕐 22.08.2025 14:30  
-📍 МСК  
+📍 MSK  
 
-**Запрос расписания:**  
-скажи что запланировано на сегодня
+**Schedule query:**  
+Tell me what is planned for today
 
-**Бот:**  
+**Bot:**  
 22.08.2025:  
-14:30 — 15:30: Встреча с Петей (МСК)
+14:30 — 15:30: Meeting with Ann (MSK)
 
