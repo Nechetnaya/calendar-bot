@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Calendar WebApp</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="topbar">
+      <div class="left">
+        <button id="btn-month" class="mode-btn active">Месяц</button>
+        <button id="btn-week" class="mode-btn">Неделя</button>
+        <button id="btn-day" class="mode-btn">День</button>
+      </div>
+      <div class="center">
+        <button id="prev" class="nav-btn">◀</button>
+        <span id="current-period" class="current-period">—</span>
+        <button id="next" class="nav-btn">▶</button>
+      </div>
+      <div class="right">
+        <input id="date-picker" type="date" />
+      </div>
+    </header>
+
+    <main class="frame-wrap">
+      <div id="loader" class="loader">Загрузка календаря…</div>
+      <div id="calendar-container" class="calendar-container"></div>
+    </main>
+  </div>
+
+  <!-- Модалка события -->
+  <div id="event-modal" class="event-modal" style="display:none;">
+    <div class="event-modal-content">
+      <button id="event-modal-close" class="event-modal-close">×</button>
+      <h3 id="event-modal-title"></h3>
+      <p id="event-modal-time"></p>
+      <p id="event-modal-description"></p>
+    </div>
+  </div>
+
+  <script type="module" src="/static/src/main.js"></script>
+  <script type="module" src="/static/src/main.js"></script>
+  <script type="module" src="/static/src/calendarInteraction.js"></script>
+</body>
+</html>

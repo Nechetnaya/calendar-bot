@@ -8,8 +8,9 @@ from datetime import datetime, timedelta
 from timezonefinder import TimezoneFinder
 from geopy.geocoders import Nominatim
 from dateparser.search import search_dates
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CallbackQueryHandler, CommandHandler
+from urllib.parse import quote_plus
 
 from bot.user_manager import UserManager
 from bot.time_parser import parse_time_from_text
@@ -301,6 +302,27 @@ class TelegramCalendarBot:
         context.user_data['waiting_for'] = 'schedule_date'
         await update.message.reply_text(
             "Введите дату для просмотра мероприятий (например, сегодня, завтра или 30.08.2025):")
+
+    async def handle_calendar_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = str(update.effective_user.id)
+        user_data = self.user_manager.get_user(user_id) or {}
+
+        calendar_id = user_data.get('calendar_id')
+        timezone = user_data.get('timezone', 'UTC')
+
+        if not calendar_id:
+            await update.message.reply_text(
+                "У вас ещё нет связанного календаря. Сначала настройте /start или укажите email/timezone.")
+            return
+
+        # URL приложения (где развёрнуто ваше мини-приложение)
+        base_url = os.getenv('WEBAPP_URL')
+        # безопасно кодируем calendar_id и timezone
+        webapp_url = f"{base_url}?cid={quote_plus(calendar_id)}&tz={quote_plus(timezone)}"
+
+        keyboard = [[InlineKeyboardButton("📅 Открыть календарь", web_app=WebAppInfo(url=webapp_url))]]
+        await update.message.reply_text("Открыть ваш Google Calendar:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -726,6 +748,7 @@ class TelegramCalendarBot:
         app.add_handler(CommandHandler('timezone', self.handle_timezone_command))
         app.add_handler(CommandHandler('alert', self.handle_alert_command))
         app.add_handler(CommandHandler("schedule", self.handle_schedule_command))
+        app.add_handler(CommandHandler("calendar", self.handle_calendar_command))
         app.add_handler(CallbackQueryHandler(self.button_callback))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         logger.info("Бот запущен!")
