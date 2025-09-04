@@ -1,0 +1,11 @@
+# Токен Telegram бота (получить у @BotFather)
+TELEGRAM_BOT_TOKEN=''
+
+# Настройки логирования
+LOG_LEVEL=INFO
+
+# LLM api (OpenAI)
+OPENAI_API_KEY=''
+
+# mini app
+WEBAPP_URL=''
